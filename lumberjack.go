@@ -22,24 +22,30 @@
 package lumberjack
 
 import (
+	"bufio"
 	"fmt"
 	"io"
 	"io/ioutil"
 	"os"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"strings"
 	"sync"
 	"time"
 )
 
-const (
-	backupTimeFormat = "2006-01-02T15-04-05.000"
+var (
+	backupTimeFormat = "2006-01-02-15-04-05" //"2006-01-02T15-04-05.000"
 	defaultMaxSize   = 100
 )
 
 // ensure we always implement io.WriteCloser
 var _ io.WriteCloser = (*Logger)(nil)
+
+func SetBackupTimeFormat(f string) {
+	backupTimeFormat = f
+}
 
 // Logger is an io.WriteCloser that writes to the specified filename.
 //
@@ -91,6 +97,11 @@ type Logger struct {
 	// backup files is the computer's local time.  The default is to use UTC
 	// time.
 	LocalTime bool `json:"localtime" yaml:"localtime"`
+
+	// BackupInCurrentTime gives ability to generate rotated log file name
+	// based on its first datetime record.
+	// This is useful for daily rolling file appender.
+	BackupInCurrentTime bool `json:"backupincurrenttime" yaml:"backupincurrenttime"`
 
 	size int64
 	file *os.File
@@ -231,12 +242,17 @@ func backupName(name string, local bool) string {
 	filename := filepath.Base(name)
 	ext := filepath.Ext(filename)
 	prefix := filename[:len(filename)-len(ext)]
-	t := currentTime()
-	if !local {
-		t = t.UTC()
+
+	timestamp := GetFirstDateTimeFromFile(name)
+	if len(timestamp) == 0 {
+		t := currentTime()
+		if !local {
+			t = t.UTC()
+		}
+
+		timestamp = t.Format(backupTimeFormat)
 	}
 
-	timestamp := t.Format(backupTimeFormat)
 	return filepath.Join(dir, fmt.Sprintf("%s-%s%s", prefix, timestamp, ext))
 }
 
@@ -412,4 +428,27 @@ func (b byFormatTime) Swap(i, j int) {
 
 func (b byFormatTime) Len() int {
 	return len(b)
+}
+
+func GetFirstDateTimeFromFile(filename string) string {
+	file, err := os.Open(filename)
+	if err != nil {
+		return ""
+	}
+	defer file.Close()
+
+	scanner := bufio.NewScanner(file)
+	r, _ := regexp.Compile(".*(\\d\\d\\d\\d\\D\\d\\d\\D\\d\\d\\D\\d\\d\\D\\d\\d\\D\\d\\d).*")
+	for scanner.Scan() {
+		t := scanner.Text()
+		sm := r.FindStringSubmatch(t)
+		if len(sm) > 0 && len(sm[1]) > 0 {
+			datetime := strings.Replace(sm[1], "/", "-", -1)
+			datetime = strings.Replace(datetime, ":", "-", -1)
+			datetime = strings.Replace(datetime, " ", "-", -1)
+
+			return datetime
+		}
+	}
+	return ""
 }
